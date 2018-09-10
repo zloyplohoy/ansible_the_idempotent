@@ -1,0 +1,5 @@
+---
+# tasks file for workshop
+- name: Success
+  debug:
+    msg: "Тестовый стенд готов к воркшопу!"
