@@ -3,3 +3,98 @@
 - name: Success
   debug:
     msg: "Тестовый стенд готов к воркшопу!"
+
+
+# Копируем файлы приложения. Объединяем копируемые файлы в массив with_items,
+# тем самым выполняя копирование нескольких файлов за один шаг. Регистрируем
+# вывод, чтобы корректно обработать изменение в дальнейших шагах.
+- name: Copy application files
+  copy:
+    src: "{{ item }}"
+    dest: /tmp/bin/
+  with_items:
+    - workshop.py
+    - workshop_.py
+  register: copy_application_files_result
+
+
+# Копируем определение сервиса. Регистрируем вывод, чтобы корректно
+# обработать изменение в дальнейших шагах.
+- name: Copy service definition
+  copy:
+    src: workshop.service
+    dest: /etc/systemd/system/
+  register: copy_service_definition_result
+
+
+# Удаляем файл конфигурации в случае, если изменились файлы приложения.
+- name: Delete configuration file
+  file:
+    name: /tmp/workshop.conf
+    state: absent
+  when: copy_application_files_result.changed
+
+
+# Генерируем файл конфигурации, если он отсутствует на файловой системе.
+- name: Generate configuration file
+  command: /usr/bin/python2 /tmp/bin/workshop.py generate
+  args:
+    creates: /tmp/workshop.conf
+
+
+# Проверяем файл конфигурации. Через директивы changed_when и filed_when
+# указываем, что данный шаг не вносит изменений и завершается c ошибкой,
+# если выходит с неожиданным результатом. Регистрируем вывод, чтобы
+# обработать его на следующем шаге.
+- name: Validate configuration file
+  command: /usr/bin/python2 /tmp/bin/workshop.py validate
+  register: validate_configuration_file_result
+  failed_when: >
+    validate_configuration_file_result.rc !=0
+    and
+    validate_configuration_file_result.stderr != "Config file is invalid"
+  changed_when: false
+
+
+# Выводим сообщение пользователю, если предыдущий шаг завершился
+# с ожидаемой ошибкой. С помощью директивы failed_when указываем,
+# что данный шаг всегда завершается с ошибкой, останавливая сценарий.
+- name: Notify user
+  debug:
+    msg: "Config file is invalid."
+  when: validate_configuration_file_result.stderr == "Config file is invalid"
+  failed_when: true
+
+
+# Перезапускаем сервис, если изменились файлы приложения или определение
+# самого сервиса. Директива daemon_reload позволит обработать обновление
+# определения сервиса в systemd.
+- name: Restart service
+  systemd:
+    name: workshop
+    state: restarted
+    daemon_reload: true
+  when: >
+    copy_application_files_result.changed
+    or
+    copy_service_definition_result.changed
+
+
+# Запускаем сервис, если сервис остановлен. Данный шаг позволит запустить
+# сервис, если он был остановлен ранее, однако изменений в файлах приложения
+# и определении сервиса не произошло. Вывод, указывающий на изменение на
+# данном шаге, также даст понять, что служба работает нестабильно.
+- name: Start service
+  systemd:
+    name: workshop
+    state: started
+  register: service_start_result
+
+
+# Проверяем работу сервиса по внешним признакам. Используем модуль wait_for
+# для проверки наличия объекта файловой системы. Модуль также может быть
+# использован для отслеживания открытия и закрытия портов и подключений.
+- name: Check service
+  wait_for:
+    path: /tmp/workshop.sock
+    timeout: 30
